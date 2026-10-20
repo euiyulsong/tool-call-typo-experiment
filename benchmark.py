@@ -112,8 +112,50 @@ def corrupt_one(text: str, seed: int) -> tuple[str, dict | None]:
     return text[:start] + typo + text[end:], {"before": word, "after": typo}
 
 
-def make_prompt(case: dict, typo: bool) -> tuple[str, dict | None]:
-    question, edit = corrupt_one(case["question"], stable_seed("typo|" + case["id"])) if typo else (case["question"], None)
+def corrupt_diverse(text: str, seed: int) -> tuple[str, list[dict]]:
+    """Apply several mixed, deterministic character-level errors to content words."""
+    rng = random.Random(seed)
+    words = [(m.start(), m.end(), m.group()) for m in re.finditer(r"[A-Za-z]{4,}", text)
+             if m.group().lower() not in STOPWORDS]
+    if not words:
+        words = [(m.start(), m.end(), m.group()) for m in re.finditer(r"[A-Za-z]{4,}", text)]
+    if not words:
+        return text, []
+    desired = min(len(words), rng.randint(2, 4))
+    chosen = rng.sample(words, desired)
+    edits = []
+    # Apply right-to-left so earlier character offsets remain stable.
+    for start, end, word in sorted(chosen, reverse=True):
+        kind = rng.choice(("transpose", "delete", "insert", "substitute", "repeat"))
+        pos = rng.randrange(len(word))
+        if kind == "transpose":
+            candidates = [i for i in range(len(word)-1) if word[i].lower() != word[i+1].lower()]
+            if not candidates: kind = "delete"
+            else:
+                pos = rng.choice(candidates)
+                changed = word[:pos] + word[pos+1] + word[pos] + word[pos+2:]
+        if kind == "delete":
+            changed = word[:pos] + word[pos+1:]
+        elif kind == "insert":
+            changed = word[:pos] + rng.choice("abcdefghijklmnopqrstuvwxyz") + word[pos:]
+        elif kind == "substitute":
+            letter = rng.choice([c for c in "abcdefghijklmnopqrstuvwxyz" if c != word[pos].lower()])
+            changed = word[:pos] + (letter.upper() if word[pos].isupper() else letter) + word[pos+1:]
+        elif kind == "repeat":
+            changed = word[:pos+1] + word[pos] + word[pos+1:]
+        new_text = text[:start] + changed + text[end:]
+        edits.append({"kind": kind, "before": word, "after": changed})
+        text = new_text
+    edits.reverse()
+    return text, edits
+
+
+def make_prompt(case: dict, typo: bool, diverse: bool = False) -> tuple[str, dict | None]:
+    if typo and diverse:
+        question, edit = corrupt_diverse(case["question"], stable_seed("diverse|" + case["id"]))
+    else:
+        question, one_edit = corrupt_one(case["question"], stable_seed("typo|" + case["id"])) if typo else (case["question"], None)
+        edit = [one_edit] if one_edit else []
     history = case["history"]
     system = ("You route user questions to domain-specific search functions. Select the relevant function(s) "
               "from the available tools. Return ONLY a JSON object with `indices`, an array of zero-based integer "
@@ -129,18 +171,27 @@ def make_prompt(case: dict, typo: bool) -> tuple[str, dict | None]:
     return system, {"question": messages, "typo_edit": edit}
 
 
-def correct_prompt(case: dict, typo: bool) -> tuple[str, dict | None]:
+def correct_prompt(case: dict, typo: bool, diverse: bool = False) -> tuple[str, dict | None]:
     """Prepare an input first corrected in a separate LLM call, then route it."""
     packed_history = list(case["history"])
     question = case["question"]
     edits = []
     if typo:
         for i, message in enumerate(packed_history):
-            message, edit = corrupt_one(message, stable_seed(f'typo|{case["id"]}|history|{i}'))
+            if diverse:
+                message, history_edits = corrupt_diverse(message, stable_seed(f'diverse|{case["id"]}|history|{i}'))
+                edit = history_edits
+            else:
+                message, one_edit = corrupt_one(message, stable_seed(f'typo|{case["id"]}|history|{i}'))
+                edit = [one_edit] if one_edit else []
             packed_history[i] = message
-            if edit: edits.append({"turn": i, **edit})
-        question, edit = corrupt_one(question, stable_seed("typo|" + case["id"]))
-        if edit: edits.append({"turn": "target", **edit})
+            if edit: edits.extend({"turn": i, **e} for e in edit)
+        if diverse:
+            question, question_edits = corrupt_diverse(question, stable_seed("diverse|" + case["id"]))
+            edits.extend({"turn": "target", **e} for e in question_edits)
+        else:
+            question, one_edit = corrupt_one(question, stable_seed("typo|" + case["id"]))
+            if one_edit: edits.append({"turn": "target", **one_edit})
     context = "\n".join(f"USER (earlier): {m}" for m in packed_history)
     if context: context += "\n"
     context += "USER (current): " + question
@@ -223,9 +274,24 @@ class Runner:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
         return row
 
+    def correct_many(self, jobs: list[dict], concurrency: int) -> dict[str, dict]:
+        pending = [j for j in jobs if j["key"] not in self.correction_cache]
+        results = {}
+        if pending:
+            with ThreadPoolExecutor(max_workers=min(concurrency, len(pending))) as pool:
+                futures = {pool.submit(self.correct, j["system"], j["prompt"], j["key"]): j for j in pending}
+                for future in as_completed(futures):
+                    job = futures[future]
+                    results[job["key"]] = future.result()
+        for job in jobs:
+            if job["key"] not in results:
+                results[job["key"]] = self.correction_cache[job["key"]]
+        return results
+
     def corrected_route(self, case: dict, packed: dict, correction_key: str,
                         existing: dict, rows_path: Path) -> dict:
-        row_key = (case["id"], "typo", "correct_then_route")
+        arm = packed.get("correction_arm", "correct_then_route")
+        row_key = (case["id"], "typo", arm)
         if row_key in existing:
             return existing[row_key]
         corrected = self.correct(packed["correction_system"], packed["input"], correction_key)
@@ -241,7 +307,7 @@ class Runner:
         gold_idx = [TOOLS.index(case["gold_tool"])]
         overlap = len(set(pred) & set(gold_idx))
         row = {"case_id": case["id"], "sample": case["sample"], "domain": case["domain"],
-               "condition": "typo", "prompt_arm": "correct_then_route", "gold_indices": gold_idx,
+               "condition": "typo", "prompt_arm": arm, "gold_indices": gold_idx,
                "predicted_indices": pred, "correct": int(set(pred) == set(gold_idx)),
                "tool_f1": round(2 * overlap / (len(pred) + len(gold_idx)), 4) if pred or gold_idx else 1.0,
                "typo_edit": packed["typo_edit"],
@@ -317,7 +383,8 @@ def summarize(rows: list[dict], out: Path) -> None:
         writer = csv.DictWriter(f, fieldnames=list(summary[0]))
         writer.writeheader(); writer.writerows(summary)
     paired = []
-    for sample in ("multi", "single"):
+    samples = sorted({r["sample"] for r in rows})
+    for sample in samples:
         for condition in ("clean", "typo"):
             direct = {f'{r["sample"]}:{r["case_id"]}': r for r in rows if r["sample"] == sample and r["condition"] == condition and r["prompt_arm"] == "direct"}
             aware = {f'{r["sample"]}:{r["case_id"]}': r for r in rows if r["sample"] == sample and r["condition"] == condition and r["prompt_arm"] == "typo_aware"}
@@ -329,16 +396,17 @@ def summarize(rows: list[dict], out: Path) -> None:
                                "accuracy_delta": round(delta / len(ids), 4),
                                "direct_accuracy": round(sum(direct[i]["correct"] for i in ids) / len(ids), 4),
                                 "typo_aware_accuracy": round(sum(aware[i]["correct"] for i in ids) / len(ids), 4)})
-            corrected = {f'{r["sample"]}:{r["case_id"]}': r for r in rows if r["sample"] == sample and r["condition"] == condition and r["prompt_arm"] == "correct_then_route"}
-            if corrected:
-                ids2 = sorted(set(direct) & set(corrected))
-                delta2 = sum(corrected[i]["correct"] - direct[i]["correct"] for i in ids2)
-                paired.append({"sample": sample, "condition": condition,
-                               "comparison": "correct_then_route_minus_direct", "n_pairs": len(ids2),
-                               "corrected_minus_direct_correct": delta2,
-                               "accuracy_delta": round(delta2 / len(ids2), 4),
-                               "direct_accuracy": round(sum(direct[i]["correct"] for i in ids2) / len(ids2), 4),
-                               "comparison_accuracy": round(sum(corrected[i]["correct"] for i in ids2) / len(ids2), 4)})
+            for correction_arm in ("correct_then_route", "correct_then_typo_aware"):
+                corrected = {f'{r["sample"]}:{r["case_id"]}': r for r in rows if r["sample"] == sample and r["condition"] == condition and r["prompt_arm"] == correction_arm}
+                if corrected:
+                    ids2 = sorted(set(direct) & set(corrected))
+                    delta2 = sum(corrected[i]["correct"] - direct[i]["correct"] for i in ids2)
+                    paired.append({"sample": sample, "condition": condition,
+                                   "comparison": f"{correction_arm}_minus_direct", "n_pairs": len(ids2),
+                                   "corrected_minus_direct_correct": delta2,
+                                   "accuracy_delta": round(delta2 / len(ids2), 4),
+                                   "direct_accuracy": round(sum(direct[i]["correct"] for i in ids2) / len(ids2), 4),
+                                   "comparison_accuracy": round(sum(corrected[i]["correct"] for i in ids2) / len(ids2), 4)})
     with (out / "paired.csv").open("w", newline="", encoding="utf-8") as f:
         fields = list(dict.fromkeys(k for row in paired for k in row))
         writer = csv.DictWriter(f, fieldnames=fields)
@@ -368,11 +436,19 @@ def main() -> None:
     parser.add_argument("--batch-id", action="append", default=[], help="Poll and collect a previously submitted Batch API ID")
     parser.add_argument("--correction-ablation", action="store_true",
                         help="Also compare typo input after a separate correction call; only runs the typo condition")
+    parser.add_argument("--diverse-singleton", action="store_true",
+                        help="Run only 100 single-turn cases with mixed, stronger typo corruption into a new output directory")
+    parser.add_argument("--correction-typo-aware", action="store_true",
+                        help="Add a separate correction followed by a typo-aware router arm")
     args = parser.parse_args()
     out = Path(args.out)
     data_dir = out / "data"
     docs, dial = load_data(data_dir)
     cases = select_cases(docs, dial, args.seed)
+    if args.diverse_singleton:
+        cases = [c for c in cases if c["sample"] == "single"]
+        if len(cases) != 100:
+            raise RuntimeError(f"Expected 100 distinct single-turn cases, got {len(cases)}")
     (out / "selected_cases.json").write_text(json.dumps(cases, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Prepared {len(cases)} cases: {sum(c['sample']=='multi' for c in cases)} multi-turn, {sum(c['sample']=='single' for c in cases)} single-turn")
     if args.prepare_only:
@@ -386,6 +462,15 @@ def main() -> None:
         for line in rows_path.read_text(encoding="utf-8").splitlines():
             if line.strip():
                 r = json.loads(line); existing[(r["case_id"], r["condition"], r["prompt_arm"])] = r
+    if args.diverse_singleton:
+        rows_path = out / "diverse_rows.jsonl"
+        existing = {}
+        if rows_path.exists():
+            for line in rows_path.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    r = json.loads(line)
+                    existing[(r["case_id"], r["condition"], r["prompt_arm"])] = r
+        runner = Runner(args.model, out / "diverse_model_cache.jsonl")
 
     # The first batch was submitted before local job manifests were added. Recover its
     # case mapping from the deterministic ordering used by that initial invocation.
@@ -516,7 +601,7 @@ def main() -> None:
             summarize(rows, out)
             print(f"Completed {len(rows)} rows; report: {out / 'report.md'}")
         return
-    total = len(cases) * (5 if args.correction_ablation else 4)
+    total = len(cases) * (4 + int(args.correction_ablation) + int(args.correction_typo_aware))
     jobs = []
     for case in cases:
         for condition in ("clean", "typo"):
@@ -524,7 +609,7 @@ def main() -> None:
                 row_key = (case["id"], condition, arm)
                 if row_key in existing:
                     continue
-                system, packed = make_prompt(case, condition == "typo")
+                system, packed = make_prompt(case, condition == "typo", diverse=args.diverse_singleton)
                 cache_key = json.dumps([args.model, row_key, system, packed["question"]], ensure_ascii=False)
                 jobs.append({"row_key": row_key, "case": case, "condition": condition, "arm": arm,
                              "system": system, "prompt": packed["question"], "packed": packed,
@@ -534,9 +619,24 @@ def main() -> None:
             arm = "correct_then_route"
             row_key = (case["id"], condition, arm)
             if row_key not in existing:
-                fix_system, packed = correct_prompt(case, True)
+                fix_system, packed = correct_prompt(case, True, diverse=args.diverse_singleton)
                 fix_key = json.dumps([args.model, "correction", case["sample"], case["id"], packed["input"]], ensure_ascii=False)
                 packed["correction_system"] = fix_system
+                packed["correction_arm"] = arm
+                jobs.append({"row_key": row_key, "case": case, "condition": condition, "arm": arm,
+                             "system": fix_system, "prompt": packed["input"], "packed": packed,
+                             "key": fix_key, "correction_job": True})
+        if args.correction_typo_aware:
+            condition = "typo"
+            arm = "correct_then_typo_aware"
+            row_key = (case["id"], condition, arm)
+            if row_key not in existing:
+                fix_system, packed = correct_prompt(case, True, diverse=args.diverse_singleton)
+                fix_key = json.dumps([args.model, "correction_typo_aware", case["sample"], case["id"], packed["input"]], ensure_ascii=False)
+                packed["correction_system"] = fix_system
+                packed["correction_arm"] = arm
+                packed["route_system"] += (" The dialogue may contain spelling mistakes. Infer intended words from context "
+                                            "and account for likely typos while selecting the tool indices.")
                 jobs.append({"row_key": row_key, "case": case, "condition": condition, "arm": arm,
                              "system": fix_system, "prompt": packed["input"], "packed": packed,
                              "key": fix_key, "correction_job": True})
@@ -547,9 +647,12 @@ def main() -> None:
     for offset in range(0, len(jobs), batch_size):
         batch_jobs = jobs[offset:offset + batch_size]
         answers_by_key = {}
-        with ThreadPoolExecutor(max_workers=min(concurrency, len(batch_jobs))) as pool:
+        correction_jobs = [job for job in batch_jobs if job.get("correction_job")]
+        correction_results = runner.correct_many(correction_jobs, concurrency) if correction_jobs else {}
+        standard_jobs = [job for job in batch_jobs if not job.get("correction_job")]
+        with ThreadPoolExecutor(max_workers=min(concurrency, max(1, len(standard_jobs)))) as pool:
             future_jobs = {pool.submit(runner.choose, job["system"], job["prompt"], job["key"]): job
-                           for job in batch_jobs}
+                           for job in standard_jobs}
             for future in as_completed(future_jobs):
                 job = future_jobs[future]
                 answers_by_key[job["key"]] = future.result()
@@ -571,13 +674,45 @@ def main() -> None:
                     f.write(json.dumps(row, ensure_ascii=False) + "\n")
                 existing[job["row_key"]] = row
                 print(f"[{len(existing)}/{total}] {case['sample']} {condition} {arm}: correct={row['correct']}", flush=True)
-        correction_jobs = [job for job in batch_jobs if job.get("correction_job")]
-        for job in correction_jobs:
-            case, packed = job["case"], job["packed"]
-            row = runner.corrected_route(case, packed, job["key"], existing, rows_path)
-            print(f"[{len(existing)}/{total}] {case['sample']} typo correct_then_route: correct={row['correct']}", flush=True)
+        if correction_jobs:
+            with ThreadPoolExecutor(max_workers=min(concurrency, len(correction_jobs))) as pool:
+                route_futures = {}
+                for job in correction_jobs:
+                    case, packed = job["case"], job["packed"]
+                    corrected = correction_results[job["key"]]
+                    history = corrected["history"] if len(corrected["history"]) == len(case["history"]) else case["history"]
+                    route_input = "\n".join(f"USER (earlier): {m}" for m in history)
+                    if route_input: route_input += "\n"
+                    route_input += "USER (current): " + corrected["question"]
+                    route_key = json.dumps([args.model, "corrected_route", case["sample"], case["id"], route_input], ensure_ascii=False)
+                    route_futures[pool.submit(runner.choose, packed["route_system"], route_input, route_key)] = (job, corrected)
+                for future in as_completed(route_futures):
+                    job, corrected = route_futures[future]
+                    routed = future.result()
+                    case, packed, arm = job["case"], job["packed"], job["arm"]
+                    pred = sorted(set(i for i in routed["indices"] if 0 <= i < len(TOOLS)))
+                    gold_idx = [TOOLS.index(case["gold_tool"])]
+                    overlap = len(set(pred) & set(gold_idx))
+                    row = {"case_id": case["id"], "sample": case["sample"], "domain": case["domain"],
+                           "condition": "typo", "prompt_arm": arm, "gold_indices": gold_idx,
+                           "predicted_indices": pred, "correct": int(set(pred) == set(gold_idx)),
+                           "tool_f1": round(2 * overlap / (len(pred) + len(gold_idx)), 4) if pred or gold_idx else 1.0,
+                           "typo_edit": packed["typo_edit"], "latency_s": corrected["latency_s"] + routed["latency_s"],
+                           "tokens": corrected["tokens"] + routed["tokens"], "corrected_question": corrected["question"]}
+                    with rows_path.open("a", encoding="utf-8") as f:
+                        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                    existing[job["row_key"]] = row
+                    print(f"[{len(existing)}/{total}] single typo {arm}: correct={row['correct']}", flush=True)
     rows = [existing[(case["id"], condition, arm)] for case in cases
-            for condition in ("clean", "typo") for arm in ("direct", "typo_aware")]
+            for condition in ("clean", "typo") for arm in ("direct", "typo_aware")
+            if (case["id"], condition, arm) in existing]
+    if args.correction_ablation or args.correction_typo_aware:
+        correction_arms = []
+        if args.correction_ablation: correction_arms.append("correct_then_route")
+        if args.correction_typo_aware: correction_arms.append("correct_then_typo_aware")
+        for arm in correction_arms:
+            rows.extend(existing[(case["id"], "typo", arm)] for case in cases
+                        if (case["id"], "typo", arm) in existing)
     summarize(rows, out)
     print(f"Completed {len(rows)} calls; report: {out / 'report.md'}")
 

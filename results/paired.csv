@@ -1,7 +1,5 @@
 sample,condition,n_pairs,typo_aware_minus_direct_correct,accuracy_delta,direct_accuracy,typo_aware_accuracy,comparison,corrected_minus_direct_correct,comparison_accuracy
-multi,clean,100,1,0.01,0.94,0.95,,,
-multi,typo,100,1,0.01,0.97,0.98,,,
-multi,typo,100,,0.0,0.97,,correct_then_route_minus_direct,0,0.97
-single,clean,100,1,0.01,0.84,0.85,,,
-single,typo,100,2,0.02,0.85,0.87,,,
-single,typo,100,,0.0,0.85,,correct_then_route_minus_direct,0,0.85
+single,clean,100,-2,-0.02,0.86,0.84,,,
+single,typo,100,2,0.02,0.86,0.88,,,
+single,typo,100,,0.0,0.86,,correct_then_route_minus_direct,0,0.86
+single,typo,100,,0.0,0.86,,correct_then_typo_aware_minus_direct,0,0.86

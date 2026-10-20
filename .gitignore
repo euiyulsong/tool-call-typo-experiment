@@ -7,3 +7,6 @@ results/model_cache.jsonl
 results/selected_cases.json
 results/SESSION_STATUS.md
 results/submitted_batches.jsonl
+results/diverse_rows.jsonl
+results/diverse_model_cache.jsonl
+results/diverse_selected_cases.json

@@ -7,9 +7,9 @@ Paired comparison of two multi-tool selection prompts using the public MultiDoc2
 
 Every example returns only a JSON list of zero-based tool indices. Accuracy is exact set match against the dataset's annotated domain/tool. Conditions are paired on the same cases and typo variants.
 
-The sample is 100 multi-turn target questions (25 per domain) plus 100 first-turn questions from distinct dialogues. The single-turn items are selected from the same validation data and are paired between prompt conditions. One adjacent-character transposition is inserted in the final question for typo conditions. A clean condition checks whether typo instructions change ordinary routing.
+The sample is 100 multi-turn target questions (25 per domain) plus 100 first-turn questions from distinct dialogues. The single-turn items are selected from the same validation data and are paired between prompt conditions. The baseline typo condition uses one adjacent-character transposition. An additional single-turn experiment injects 2–4 mixed character-level errors (transposition, deletion, insertion, substitution, or repeated character) into the question. A clean condition checks whether typo instructions change ordinary routing.
 
-The separate-correction arm first asks the model to minimally correct spelling in the user turns, then routes the corrected dialogue in a second API call. It is reported for typo inputs only.
+The separate-correction arm first asks the model to minimally correct spelling in the user turns, then routes the corrected dialogue in a second API call. For the diverse-singleton experiment this is compared with both a direct router and a typo-aware router after correction.
 
 ## Run
 
@@ -20,7 +20,7 @@ python3 benchmark.py
 
 Dependencies: `openai`. The script reads `OPENAI_API_KEY` and uses the OpenAI Responses API. To use an OpenRouter-compatible base URL instead, set `OPENAI_BASE_URL` and set `OPENAI_API_KEY` accordingly. API credentials are never written to result files.
 
-Results are saved to `results/rows.jsonl`, `results/summary.csv`, `results/paired.csv`, and `results/report.md`. Private/local per-row traces, cached prompts, and source dataset files are excluded from the published repository.
+Results are saved to `results/rows.jsonl`, `results/summary.csv`, `results/paired.csv`, and `results/report.md`. Run the diverse single-turn extension with `python3 benchmark.py --out ./results --diverse-singleton --correction-ablation --correction-typo-aware --batch-size 50 --concurrency 50`. Private/local per-row traces, cached prompts, and source dataset files are excluded from the published repository.
 
 Dataset: [MultiDoc2Dial](https://doc2dial.github.io/multidoc2dial/), validation dialogues and documents, downloaded from its official archive URL. The tool functions model four domain-specific search indices (`dmv`, `ssa`, `va`, `studentaid`).
 
@@ -35,6 +35,21 @@ Metric: exact tool-set accuracy. Since the dataset labels one domain-specific se
 | Multi-turn (100) | Clean | 94% | 95% | — |
 | Multi-turn (100) | Synthetic typo | 97% | 98% | 97% |
 | Single-turn (100) | Clean | 84% | 85% | — |
-| Single-turn (100) | Synthetic typo | 85% | 87% | 85% |
+| Single-turn (100) | One transposition | 85% | 87% | 85% |
 
-The separate correction stage did not improve exact tool accuracy over routing the typo input directly in these samples, while requiring an extra sequential API call. Explicit typo-aware routing was 1–2 percentage points higher. See `results/report.md` and CSV files for paired counts, latency, and token summaries. These small differences should be interpreted as descriptive results, not a broad claim of statistical significance.
+The separate correction stage did not improve exact tool accuracy over routing the typo input directly in these samples, while requiring an extra sequential API call. Explicit typo-aware routing was 1–2 percentage points higher. These initial typo results use only one character transposition.
+
+### Stronger diverse-typo single-turn run
+
+| Input / routing strategy | Exact accuracy (n=100) |
+|---|---:|
+| Clean, direct | 86% |
+| Clean, typo-aware prompt | 84% |
+| Diverse typos, direct | 86% |
+| Diverse typos, typo-aware prompt | 88% |
+| Diverse typos, correct then direct route | 86% |
+| Diverse typos, correct then typo-aware route | 86% |
+
+The stronger corruption applied 2–4 varied character errors to each eligible question. The typo-aware prompt was +2 percentage points over direct routing on typo inputs but -2 points on clean inputs. Separate correction did not improve accuracy here and used two sequential calls. These are descriptive single-run measurements; paired case-level outcomes are in `results/paired.csv` for the run summary, and no significance claim is intended.
+
+See `results/summary.csv`, `results/paired.csv`, and `results/report.md` for the updated initial summary. The detailed diverse-typo raw rows are retained locally for privacy and are not published.
