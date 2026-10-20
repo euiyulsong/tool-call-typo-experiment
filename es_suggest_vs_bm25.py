@@ -103,37 +103,36 @@ def main():
     domains, bm25 = load_bm25(cases, docs, es, args.index)
     records = []
     condition_map = {
-        "raw_bm25_no_suggest": lambda raw, rewrite: raw,
-        "es_term_suggest_bm25": lambda raw, rewrite: es_suggest(es, args.index, raw),
-        "llm_rewrite_bm25": lambda raw, rewrite: rewrite,
-        "es_suggest_pipeline": lambda raw, rewrite: es_suggest(es, args.index, raw),
+        # Oracle-domain BM25 arms isolate query text and suggestion effects.
+        "raw_full_dialogue_bm25": lambda raw, rewrite, last: raw,
+        "last_turn_raw_bm25": lambda raw, rewrite, last: last,
+        "llm_rewrite_bm25": lambda raw, rewrite, last: rewrite,
+        "es_suggest_raw_full_dialogue_bm25": lambda raw, rewrite, last: es_suggest(es, args.index, raw),
+        "es_suggest_last_turn_bm25": lambda raw, rewrite, last: es_suggest(es, args.index, last),
+        "es_suggest_llm_rewrite_bm25": lambda raw, rewrite, last: es_suggest(es, args.index, rewrite),
     }
     for case_id, case in cases.items():
         detail = typo_rows[case_id]
         raw_query = "\n".join(f'{m["role"].upper()}: {m["text"]}'
                                for m in detail["variant_history"] + [{"role": "user", "text": detail["variant_question"]}])
+        last_turn_query = detail["variant_question"]
         rewrite_query = detail["selection_and_search_query"]
         domain = case["domain"]  # hold routing fixed at gold domain to isolate retrieval/query strategy
         gold = set(case["gold_docs"])
         for condition, builder in condition_map.items():
             t0 = time.perf_counter()
-            q = builder(raw_query, rewrite_query)
-            suggest_s = time.perf_counter() - t0 if condition in {"es_term_suggest_bm25", "es_suggest_pipeline"} else 0.0
+            q = builder(raw_query, rewrite_query, last_turn_query)
+            suggest_s = time.perf_counter() - t0 if condition.startswith("es_suggest_") else 0.0
             t1 = time.perf_counter()
-            search_domain = domain
-            if condition == "es_suggest_pipeline":
-                # Full Elasticsearch-only path: suggest on the raw text, then let ES BM25
-                # choose documents over the complete four-domain corpus (no oracle router).
-                es_resp = es.search(index=args.index, size=5, query={"match": {"text": {"query": q}}})
-                ranked = [h["_source"]["doc_id"] for h in es_resp["hits"]["hits"]]
-                first = next((i for i, docid in enumerate(ranked[:10], 1) if docid in gold), None)
-                recall = len(set(ranked[:5]) & gold) / len(gold)
-            else:
-                ranked = rank_query(search_domain, q, domains, bm25)
-                first = next((i for i, docid in enumerate(ranked[:10], 1) if docid in gold), None)
-                recall = len(set(ranked[:5]) & gold) / len(gold)
+            ranked = rank_query(domain, q, domains, bm25)
+            first = next((i for i, docid in enumerate(ranked[:10], 1) if docid in gold), None)
+            recall = len(set(ranked[:5]) & gold) / len(gold)
             search_s = time.perf_counter() - t1
             records.append({"case_id": case_id, "domain": domain, "condition": condition,
+                            "input_query_kind": ("raw_full_dialogue" if "full_dialogue" in condition else
+                                                 "last_turn_only" if "last_turn" in condition else "llm_router_rewrite"),
+                            "query_text": q,
+                            "suggested_query": q if "es_suggest_" in condition else "",
                             "query_terms": len(tokens(q)), "query_chars": len(q),
                             "suggest_latency_s": suggest_s, "search_latency_s": search_s,
                             "total_latency_s": suggest_s + search_s,
@@ -154,6 +153,7 @@ def main():
     for condition in conditions:
         batch = [r for r in records if r["condition"] == condition]
         summaries.append({"condition": condition, "n": len(batch),
+                          "input_query_kind": batch[0]["input_query_kind"],
                           "mean_query_terms": round(statistics.fmean(r["query_terms"] for r in batch), 2),
                           "mean_suggest_latency_ms": round(statistics.fmean(r["suggest_latency_s"] for r in batch) * 1000, 3),
                           "mean_search_latency_ms": round(statistics.fmean(r["search_latency_s"] for r in batch) * 1000, 3),
@@ -162,26 +162,38 @@ def main():
     with (args.out / "summary.csv").open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(summaries[0])); w.writeheader(); w.writerows(summaries)
     paired = []
-    baseline = "raw_bm25_no_suggest"
-    for condition in conditions[1:]:
+    comparison_pairs = [("es_suggest_raw_full_dialogue_bm25", "raw_full_dialogue_bm25"),
+                        ("es_suggest_last_turn_bm25", "last_turn_raw_bm25"),
+                        ("es_suggest_llm_rewrite_bm25", "llm_rewrite_bm25"),
+                        ("last_turn_raw_bm25", "raw_full_dialogue_bm25"),
+                        ("llm_rewrite_bm25", "raw_full_dialogue_bm25")]
+    for condition, baseline in comparison_pairs:
+        comparison_name = f"{condition}_minus_{baseline}"
+        if condition == "es_suggest_raw_full_dialogue_bm25":
+            comparison_name = "es_suggest_raw_query_minus_raw_query"
+        elif condition == "es_suggest_last_turn_bm25":
+            comparison_name = "es_suggest_last_turn_query_minus_last_turn_query"
+        elif condition == "es_suggest_llm_rewrite_bm25":
+            comparison_name = "es_suggest_llm_rewrite_query_minus_llm_rewrite_query"
         for metric in metrics:
             delta = [by_case[(case_id, condition)][metric] - by_case[(case_id, baseline)][metric]
                      for case_id in cases]
             lo, hi = bootstrap_ci(delta, seed=20261021)
-            paired.append({"comparison": f"{condition}_minus_{baseline}", "metric": metric,
+            paired.append({"comparison": comparison_name, "metric": metric,
                            "n_pairs": len(delta), "mean_delta": round(statistics.fmean(delta), 4),
                            "ci95_low": round(lo, 4), "ci95_high": round(hi, 4),
                            "improved": sum(x > 0 for x in delta), "tied": sum(x == 0 for x in delta),
                            "declined": sum(x < 0 for x in delta)})
     with (args.out / "paired.csv").open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(paired[0])); w.writeheader(); w.writerows(paired)
-    report = ["# Elasticsearch term suggester vs BM25 comparison", "",
-              "All arms use the same 100 typoed MultiDoc2Dial multi-turn cases, the same fixed gold domain, the same documents/chunks, and BM25 ranking. No answer generation is involved. The ES term-suggester vocabulary is built from the same document corpus.", "",
-              "Arms: `raw_bm25_no_suggest` searches the entire corrupted dialogue as-is; `es_term_suggest_bm25` applies Elasticsearch term suggestions then searches the gold-domain BM25 index; `llm_rewrite_bm25` uses the saved typo-aware router's standalone query then the same gold-domain BM25 index; `es_suggest_pipeline` applies ES suggestion and ES BM25 searches all four domains without a gold-domain router. The first three arms fix domain to gold to compare query formulation; ES-only pipeline is end-to-end domain search.", "",
-              "## Means", "", "| Query strategy | n | Mean terms | Recall@5 | MRR@10 | Hit@1 | Hit@3 | Hit@5 | Mean suggest ms | Mean search ms |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    report = ["# Elasticsearch term suggester vs BM25: query-by-query comparison", "",
+              "All arms use the same 100 heavily typoed MultiDoc2Dial multi-turn cases, same gold-domain oracle, same chunk corpus and BM25 ranking. No generated answers are involved. Elasticsearch 8.15.5 term suggester draws candidates from the same full document corpus.", "",
+              "Query definitions: `raw_full_dialogue` is all corrupted user and agent turns concatenated; `last_turn_only` is just the corrupted final user utterance; `llm_router_rewrite` is the saved typo-aware router's standalone search query. For each query source, separate arms run without suggestion and with ES top-1 term suggestions applied before BM25. Gold domain is fixed to isolate query/suggest behavior; this is not a test of ES routing.", "",
+              "## Means", "", "| Strategy | Input query | n | Terms | Recall@5 | MRR@10 | Hit@1 | Hit@3 | Hit@5 | Suggest ms | Search ms |", "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for r in summaries:
-        report.append("| " + " | ".join(str(r[k]) for k in ("condition", "n", "mean_query_terms", "bm25_doc_recall@5", "bm25_mrr@10", "hit@1", "hit@3", "hit@5", "mean_suggest_latency_ms", "mean_search_latency_ms")) + " |")
-    report += ["", "## Paired delta vs raw BM25", "", "| Comparison | Metric | Δ | 95% paired bootstrap CI | W/T/L |", "|---|---|---:|---:|---:|"]
+        row = next(x for x in records if x["condition"] == r["condition"])
+        report.append("| " + " | ".join(str(x) for x in (r["condition"], row["input_query_kind"], r["n"], r["mean_query_terms"], r["bm25_doc_recall@5"], r["bm25_mrr@10"], r["hit@1"], r["hit@3"], r["hit@5"], r["mean_suggest_latency_ms"], r["mean_search_latency_ms"])) + " |")
+    report += ["", "## Paired comparisons", "", "| Comparison | Metric | Δ | 95% paired bootstrap CI | W/T/L |", "|---|---|---:|---:|---:|"]
     for r in paired:
         report.append(f'| {r["comparison"]} | {r["metric"]} | {r["mean_delta"]:+.4f} | [{r["ci95_low"]:+.4f}, {r["ci95_high"]:+.4f}] | {r["improved"]}/{r["tied"]}/{r["declined"]} |')
     (args.out / "report.md").write_text("\n".join(report) + "\n", encoding="utf-8")

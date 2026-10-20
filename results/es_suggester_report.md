@@ -1,36 +1,47 @@
-# Elasticsearch term suggester vs BM25
+# Elasticsearch term suggester: each query input evaluated separately
 
-## Design
+All results use the same 100 heavy-typo MultiDoc2Dial multi-turn cases and gold-domain BM25 index. Elasticsearch 8.15.5 term suggester uses the same corpus vocabulary and replaces each eligible token with its top suggestion.
 
-- 100 paired, heavily typo-corrupted MultiDoc2Dial multi-turn cases (three mixed character operations on one eligible word per user turn).
-- Elasticsearch 8.15.5 `term` suggester, candidate vocabulary indexed from the same official document chunks used for BM25.
-- The suggester selects the top suggestion for every eligible term (`suggest_mode=always`, max edits 2, prefix length 1, minimum word length 4), and substitutions are applied before retrieval.
-- BM25 corpus, chunking and ranking are held fixed. For the first three arms, the annotated gold domain is fixed, isolating query formulation. The ES-only end-to-end arm searches the whole corpus with no model router.
-- No dense retrieval, cross-encoder or answer generation.
+## Input query definitions
+
+- **Raw full dialogue:** all corrupted user and agent turns concatenated.
+- **Last turn only:** only the corrupted final user utterance.
+- **LLM router rewrite:** the saved typo-aware router's focused standalone search query.
+
+Each input is tested without suggestion and with Elasticsearch term suggestions, then searched by the same gold-domain BM25 index. The domain is fixed to gold for all arms; this isolates retrieval and does not measure ES routing.
 
 ## Mean results
 
-| Strategy | Query terms | Recall@5 | MRR@10 | Hit@1 | Hit@3 | Hit@5 | Mean suggest latency |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| Raw typo dialogue → BM25, no suggestions | 128.72 | 0.71 | 0.5696 | 0.46 | 0.67 | 0.71 | 0 ms |
-| ES term suggest → gold-domain BM25 | 128.76 | 0.69 | 0.5471 | 0.43 | 0.66 | 0.69 | 11.086 ms |
-| Saved typo-aware LLM router query → gold-domain BM25 | 15.61 | 0.73 | 0.5786 | 0.46 | 0.65 | 0.73 | not timed here |
-| ES term suggest → global ES BM25 (no router) | 128.76 | 0.70 | 0.5458 | 0.43 | 0.69 | 0.70 | 11.322 ms |
+| Strategy | Input query | n | Mean terms | Recall@5 | MRR@10 | Hit@1 | Hit@3 | Hit@5 | Suggest ms | Search ms |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Raw BM25 | Raw full dialogue | 100 | 128.72 | 0.71 | 0.5696 | 0.46 | 0.67 | 0.71 | 0.0 | 9.201 |
+| Raw BM25 | Last turn only | 100 | 13.05 | 0.44 | 0.3322 | 0.27 | 0.36 | 0.44 | 0.0 | 0.909 |
+| Raw BM25 | LLM router rewrite | 100 | 15.61 | 0.73 | 0.5786 | 0.46 | 0.65 | 0.73 | 0.0 | 1.107 |
+| ES term suggest → BM25 | Raw full dialogue | 100 | 128.76 | 0.69 | 0.5471 | 0.43 | 0.66 | 0.69 | 11.6 | 9.473 |
+| ES term suggest → BM25 | Last turn only | 100 | 13.06 | 0.41 | 0.3109 | 0.25 | 0.34 | 0.41 | 3.368 | 1.443 |
+| ES term suggest → BM25 | LLM router rewrite | 100 | 15.61 | 0.71 | 0.5346 | 0.41 | 0.60 | 0.71 | 2.618 | 1.654 |
 
-## Paired ES term-suggest minus raw BM25
+## ES suggestion effect within each query input
 
-| Metric | Mean delta | 95% paired bootstrap CI | Improved / tied / declined |
-|---|---:|---:|---:|
-| Document Recall@5 | −0.0200 | [−0.0500, 0.0000] | 0 / 98 / 2 |
-| MRR@10 | −0.0225 | [−0.0599, +0.0095] | 7 / 84 / 9 |
-| Hit@1 | −0.0300 | [−0.0800, +0.0200] | 2 / 93 / 5 |
-| Hit@3 | −0.0100 | [−0.0300, 0.0000] | 0 / 99 / 1 |
-| Hit@5 | −0.0200 | [−0.0500, 0.0000] | 0 / 98 / 2 |
+| Input query | Metric | ES suggest − raw | Paired 95% bootstrap CI | W/T/L |
+|---|---|---:|---:|---:|
+| Raw full dialogue | Recall@5 | −0.0200 | [−0.0500, 0.0000] | 0/98/2 |
+| Raw full dialogue | MRR@10 | −0.0225 | [−0.0599, +0.0095] | 7/84/9 |
+| Last turn only | Recall@5 | −0.0300 | [−0.0800, +0.0200] | 2/93/5 |
+| Last turn only | MRR@10 | −0.0213 | [−0.0613, +0.0158] | 5/86/9 |
+| LLM router rewrite | Recall@5 | −0.0200 | [−0.0500, 0.0000] | 0/98/2 |
+| LLM router rewrite | MRR@10 | **−0.0440** | **[−0.0789, −0.0149]** | 2/88/10 |
+
+## Query-source comparison without suggestion
+
+| Comparison | Metric | Δ | Paired 95% bootstrap CI |
+|---|---|---:|---:|
+| Last turn only − raw full dialogue | Recall@5 | −0.2700 | [−0.4000, −0.1400] |
+| LLM router rewrite − raw full dialogue | Recall@5 | +0.0200 | [−0.0900, +0.1300] |
+| LLM router rewrite − raw full dialogue | MRR@10 | +0.0090 | [−0.0764, +0.0957] |
 
 ## Interpretation
 
-On this sample, unconditional ES term replacement before BM25 does not show a retrieval gain over raw BM25 and adds a network call. The point estimates are lower with suggestions; the paired intervals touch/include zero, so the differences are not conclusive. The typo-aware LLM query has higher Recall@5 and MRR point estimates, but the paired intervals versus raw query also include zero, and the comparison changes query length/focus as well as typo correction.
+The three query types must be interpreted separately. The last-turn-only query performs much worse than the full history, demonstrating that earlier dialogue context carries retrieval information. The LLM rewrite is a compact context-aware standalone query and had the highest Recall@5/MRR point scores without ES suggestion. Across all three query inputs, unconditional top-1 ES suggestion did not improve recall; when applied to the rewritten query, MRR@10 decreased with its paired confidence interval below zero.
 
-The ES-only pipeline includes global domain search while the other BM25 arms use the gold domain, so treat it as a separate end-to-end diagnostic, not a controlled query-only contrast. This tests automatic top-1 replacement, not confidence-gated suggestions, alternative-query expansion, phrase suggester, or production Elasticsearch analyzer tuning. A follow-up should test applying suggestions only to low-confidence/zero-result queries or retrieving both raw and suggested queries and fusing results.
-
-Exact aggregate values are in `es_suggester_summary.csv` and `es_suggester_paired.csv`. Per-case queries and document IDs are not published.
+These are severe synthetic typos and a single 100-case run. ES term suggestion auto-replaced top-1 suggestions; confidence-gated fallback, candidate expansion/fusion, phrase suggester and production analyzer tuning were not tested. Per-case query rows are kept local.

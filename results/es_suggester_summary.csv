@@ -1,5 +1,7 @@
-condition,n,mean_query_terms,mean_suggest_latency_ms,mean_search_latency_ms,mean_total_latency_ms,bm25_doc_recall@5,bm25_mrr@10,hit@1,hit@3,hit@5
-raw_bm25_no_suggest,100,128.72,0.0,9.584,9.584,0.71,0.5696,0.46,0.67,0.71
-es_term_suggest_bm25,100,128.76,11.086,9.392,20.478,0.69,0.5471,0.43,0.66,0.69
-llm_rewrite_bm25,100,15.61,0.0,1.12,1.12,0.73,0.5786,0.46,0.65,0.73
-es_suggest_pipeline,100,128.76,11.322,7.512,18.834,0.7,0.5458,0.43,0.69,0.7
+condition,input_query_kind,n,mean_query_terms,mean_suggest_latency_ms,mean_search_latency_ms,mean_total_latency_ms,bm25_doc_recall@5,bm25_mrr@10,hit@1,hit@3,hit@5
+raw_full_dialogue_bm25,raw_full_dialogue,100,128.72,0.0,9.201,9.201,0.71,0.5696,0.46,0.67,0.71
+last_turn_raw_bm25,last_turn_only,100,13.05,0.0,0.909,0.909,0.44,0.3322,0.27,0.36,0.44
+llm_rewrite_bm25,llm_router_rewrite,100,15.61,0.0,1.107,1.107,0.73,0.5786,0.46,0.65,0.73
+es_suggest_raw_full_dialogue_bm25,raw_full_dialogue,100,128.76,11.6,9.473,21.073,0.69,0.5471,0.43,0.66,0.69
+es_suggest_last_turn_bm25,last_turn_only,100,13.06,3.368,1.443,4.811,0.41,0.3109,0.25,0.34,0.41
+es_suggest_llm_rewrite_bm25,llm_router_rewrite,100,15.61,2.618,1.654,4.272,0.71,0.5346,0.41,0.6,0.71
