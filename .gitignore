@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.env
+results/data/
+results/rows.jsonl
+results/model_cache.jsonl
+results/selected_cases.json
+results/SESSION_STATUS.md
+results/submitted_batches.jsonl
