@@ -438,6 +438,8 @@ def main() -> None:
                         help="Also compare typo input after a separate correction call; only runs the typo condition")
     parser.add_argument("--diverse-singleton", action="store_true",
                         help="Run only 100 single-turn cases with mixed, stronger typo corruption into a new output directory")
+    parser.add_argument("--diverse-multiturn", action="store_true",
+                        help="Run only 100 multi-turn cases with mixed, stronger typo corruption into a new output directory")
     parser.add_argument("--correction-typo-aware", action="store_true",
                         help="Add a separate correction followed by a typo-aware router arm")
     args = parser.parse_args()
@@ -445,10 +447,11 @@ def main() -> None:
     data_dir = out / "data"
     docs, dial = load_data(data_dir)
     cases = select_cases(docs, dial, args.seed)
-    if args.diverse_singleton:
-        cases = [c for c in cases if c["sample"] == "single"]
+    if args.diverse_singleton or args.diverse_multiturn:
+        target_sample = "single" if args.diverse_singleton else "multi"
+        cases = [c for c in cases if c["sample"] == target_sample]
         if len(cases) != 100:
-            raise RuntimeError(f"Expected 100 distinct single-turn cases, got {len(cases)}")
+            raise RuntimeError(f"Expected 100 distinct {target_sample} cases, got {len(cases)}")
     (out / "selected_cases.json").write_text(json.dumps(cases, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Prepared {len(cases)} cases: {sum(c['sample']=='multi' for c in cases)} multi-turn, {sum(c['sample']=='single' for c in cases)} single-turn")
     if args.prepare_only:
@@ -462,15 +465,16 @@ def main() -> None:
         for line in rows_path.read_text(encoding="utf-8").splitlines():
             if line.strip():
                 r = json.loads(line); existing[(r["case_id"], r["condition"], r["prompt_arm"])] = r
-    if args.diverse_singleton:
-        rows_path = out / "diverse_rows.jsonl"
+    if args.diverse_singleton or args.diverse_multiturn:
+        diverse_tag = "diverse_single" if args.diverse_singleton else "diverse_multi"
+        rows_path = out / ("diverse_singleton_rows.jsonl" if args.diverse_singleton else "diverse_multiturn_rows.jsonl")
         existing = {}
         if rows_path.exists():
             for line in rows_path.read_text(encoding="utf-8").splitlines():
                 if line.strip():
                     r = json.loads(line)
                     existing[(r["case_id"], r["condition"], r["prompt_arm"])] = r
-        runner = Runner(args.model, out / "diverse_model_cache.jsonl")
+        runner = Runner(args.model, out / f"{diverse_tag}_model_cache.jsonl")
 
     # The first batch was submitted before local job manifests were added. Recover its
     # case mapping from the deterministic ordering used by that initial invocation.
@@ -602,6 +606,15 @@ def main() -> None:
             print(f"Completed {len(rows)} rows; report: {out / 'report.md'}")
         return
     total = len(cases) * (4 + int(args.correction_ablation) + int(args.correction_typo_aware))
+    if args.diverse_multiturn:
+        rows_path = out / "diverse_multiturn_rows.jsonl"
+        existing = {}
+        if rows_path.exists():
+            for line in rows_path.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    r = json.loads(line)
+                    existing[(r["case_id"], r["condition"], r["prompt_arm"])] = r
+        runner = Runner(args.model, out / "diverse_multiturn_model_cache.jsonl")
     jobs = []
     for case in cases:
         for condition in ("clean", "typo"):
@@ -609,7 +622,7 @@ def main() -> None:
                 row_key = (case["id"], condition, arm)
                 if row_key in existing:
                     continue
-                system, packed = make_prompt(case, condition == "typo", diverse=args.diverse_singleton)
+                system, packed = make_prompt(case, condition == "typo", diverse=(args.diverse_singleton or args.diverse_multiturn))
                 cache_key = json.dumps([args.model, row_key, system, packed["question"]], ensure_ascii=False)
                 jobs.append({"row_key": row_key, "case": case, "condition": condition, "arm": arm,
                              "system": system, "prompt": packed["question"], "packed": packed,
@@ -619,7 +632,7 @@ def main() -> None:
             arm = "correct_then_route"
             row_key = (case["id"], condition, arm)
             if row_key not in existing:
-                fix_system, packed = correct_prompt(case, True, diverse=args.diverse_singleton)
+                fix_system, packed = correct_prompt(case, True, diverse=(args.diverse_singleton or args.diverse_multiturn))
                 fix_key = json.dumps([args.model, "correction", case["sample"], case["id"], packed["input"]], ensure_ascii=False)
                 packed["correction_system"] = fix_system
                 packed["correction_arm"] = arm
@@ -631,7 +644,7 @@ def main() -> None:
             arm = "correct_then_typo_aware"
             row_key = (case["id"], condition, arm)
             if row_key not in existing:
-                fix_system, packed = correct_prompt(case, True, diverse=args.diverse_singleton)
+                fix_system, packed = correct_prompt(case, True, diverse=(args.diverse_singleton or args.diverse_multiturn))
                 fix_key = json.dumps([args.model, "correction_typo_aware", case["sample"], case["id"], packed["input"]], ensure_ascii=False)
                 packed["correction_system"] = fix_system
                 packed["correction_arm"] = arm

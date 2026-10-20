@@ -55,3 +55,20 @@ The stronger corruption applied 2–4 varied character errors to each eligible q
 Paired with the same clean direct result for each of the 100 cases, the diverse-typo direct arm had 86/100 correct, with 4 cases changing from wrong→right and 4 changing right→wrong (net 0). The typo-aware arm had 5 wrong→right and 7 right→wrong (net -2 versus its clean typo-aware baseline; its overall accuracy was 88%). Correct-then-direct had 2 wrong→right and 2 right→wrong versus clean direct (net 0); correct-then-typo-aware had 3 wrong→right and 3 right→wrong (net 0). Against the same typo-direct baseline (86/100), typo-aware routing gained two net cases (88/100); either correction pipeline tied it at 86/100. Thus the modest typo-aware gain is visible in this one paired sample, while a separate correction call produced no net gain.
 
 See `results/summary.csv`, `results/paired.csv`, and `results/report.md` for the updated initial summary. The detailed diverse-typo raw rows are retained locally for privacy and are not published.
+
+### Diverse-typo multi-turn run
+
+The same 100 multi-turn cases (25 per domain) were evaluated with clean and 2–4 mixed character errors in the latest user turn. For typo inputs, the run compared direct routing, typo-aware routing, a separate correction call followed by direct routing, and correction followed by typo-aware routing.
+
+| Input / routing strategy | Exact accuracy (n=100) |
+|---|---:|
+| Clean, direct | 96% |
+| Clean, typo-aware prompt | 95% |
+| Diverse typos, direct | 97% |
+| Diverse typos, typo-aware prompt | 97% |
+| Diverse typos, correct then direct route | 97% |
+| Diverse typos, correct then typo-aware route | 97% |
+
+Against the same typo-direct baseline, typo-aware routing and both correction pipelines had zero net accuracy change (97/100 each). Pairwise outputs were identical on 96 cases; among the four changed outcomes, each comparison had one wrong→right and one right→wrong. Clean direct was 96/100, while clean typo-aware was 95/100. The separate correction pipelines added a sequential model call without improving exact tool accuracy in this sample. These are descriptive outcomes from one run, not a significance claim. The detailed raw rows stay local; this public summary reports aggregate counts only.
+
+The multi-turn run summary is in `results/multiturn_diverse_summary.csv`, with paired accuracy comparisons in `results/multiturn_diverse_paired.csv` and a readable report in `results/multiturn_diverse_report.md`.

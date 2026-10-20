@@ -1,0 +1,5 @@
+sample,condition,n_pairs,comparison,direct_accuracy,comparison_accuracy,accuracy_delta,wrong_to_right,right_to_wrong
+multi,clean,100,typo_aware_minus_direct,0.96,0.95,-0.01,0,1
+multi,typo,100,typo_aware_minus_direct,0.97,0.97,0.0,1,1
+multi,typo,100,correct_then_route_minus_direct,0.97,0.97,0.0,1,1
+multi,typo,100,correct_then_typo_aware_minus_direct,0.97,0.97,0.0,1,1

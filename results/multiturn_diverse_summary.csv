@@ -1,0 +1,7 @@
+sample,condition,prompt_arm,n,tool_set_accuracy,mean_tool_f1,mean_latency_s,mean_tokens
+multi,clean,direct,100,0.96,0.9667,1.8121,337.03
+multi,clean,typo_aware,100,0.95,0.9567,1.8792,336.52
+multi,typo,correct_then_route,100,0.97,0.97,5.9026,798.77
+multi,typo,correct_then_typo_aware,100,0.97,0.97,5.9513,814.26
+multi,typo,direct,100,0.97,0.9767,2.0021,375.57
+multi,typo,typo_aware,100,0.97,0.97,2.0171,372.51
