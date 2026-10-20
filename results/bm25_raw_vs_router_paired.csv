@@ -1,0 +1,6 @@
+metric,n_pairs,raw_no_suggest,typo_aware_router_query,mean_paired_delta,ci95_low,ci95_high,improved,tied,declined
+bm25_doc_recall@5,100,0.71,0.73,0.02,-0.09,0.13,16,70,14
+bm25_mrr@10,100,0.5696,0.5786,0.009,-0.0764,0.0957,30,44,26
+bm25_hit@1,100,0.46,0.46,0.0,-0.1,0.1,14,72,14
+bm25_hit@3,100,0.67,0.65,-0.02,-0.12,0.08,13,72,15
+bm25_hit@5,100,0.71,0.73,0.02,-0.09,0.13,16,70,14
