@@ -1,0 +1,16 @@
+comparison,metric,n_pairs,mean_delta,ci95_low,ci95_high,improved,tied,declined
+es_term_suggest_bm25_minus_raw_bm25_no_suggest,bm25_doc_recall@5,100,-0.02,-0.05,0.0,0,98,2
+es_term_suggest_bm25_minus_raw_bm25_no_suggest,bm25_mrr@10,100,-0.0225,-0.0599,0.0095,7,84,9
+es_term_suggest_bm25_minus_raw_bm25_no_suggest,hit@1,100,-0.03,-0.08,0.02,2,93,5
+es_term_suggest_bm25_minus_raw_bm25_no_suggest,hit@3,100,-0.01,-0.03,0.0,0,99,1
+es_term_suggest_bm25_minus_raw_bm25_no_suggest,hit@5,100,-0.02,-0.05,0.0,0,98,2
+llm_rewrite_bm25_minus_raw_bm25_no_suggest,bm25_doc_recall@5,100,0.02,-0.09,0.13,16,70,14
+llm_rewrite_bm25_minus_raw_bm25_no_suggest,bm25_mrr@10,100,0.009,-0.0764,0.0957,30,44,26
+llm_rewrite_bm25_minus_raw_bm25_no_suggest,hit@1,100,0.0,-0.1,0.1,14,72,14
+llm_rewrite_bm25_minus_raw_bm25_no_suggest,hit@3,100,-0.02,-0.12,0.08,13,72,15
+llm_rewrite_bm25_minus_raw_bm25_no_suggest,hit@5,100,0.02,-0.09,0.13,16,70,14
+es_suggest_pipeline_minus_raw_bm25_no_suggest,bm25_doc_recall@5,100,-0.01,-0.06,0.04,3,93,4
+es_suggest_pipeline_minus_raw_bm25_no_suggest,bm25_mrr@10,100,-0.0238,-0.0696,0.0204,9,76,15
+es_suggest_pipeline_minus_raw_bm25_no_suggest,hit@1,100,-0.03,-0.1,0.03,4,89,7
+es_suggest_pipeline_minus_raw_bm25_no_suggest,hit@3,100,0.02,-0.03,0.07,4,94,2
+es_suggest_pipeline_minus_raw_bm25_no_suggest,hit@5,100,-0.01,-0.06,0.04,3,93,4

@@ -15,3 +15,4 @@ results/diverse_singleton_model_cache.jsonl
 results/diverse_multiturn_rows.jsonl
 results/diverse_multi_model_cache.jsonl
 results/bm25_raw_vs_router/rows.csv
+results/es_suggester/rows.csv
